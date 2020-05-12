@@ -1,0 +1,213 @@
+---
+title: "Data Prep for Shiny App"
+author: "Annette Hilton"
+date: "2/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(here)
+library(sf)
+library(tmap)
+library(tmaptools)
+library(maps)
+library(leaflet)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+# Disable scientific notation 
+
+options(scipen=999)
+```
+
+Read in USGS Data 
+
+```{r}
+# Read in USGS Data 
+
+entire_usgs_gw <- readr::read_tsv("entire_usgs_usa.txt")
+
+```
+
+Tidy data 
+
+```{r}
+# Remove NA values for lat/long in entire_usgs_gw 
+# Remove NA values for lev_va 
+
+gw_tidy <- entire_usgs_gw %>% 
+  filter(!dec_long_va == "NA" | !dec_lat_va == "NA") %>% 
+  filter(!lev_va == "NA") %>% 
+  filter(!state %in% c("puertorico", "virginislands")) %>% 
+  mutate(state = str_to_title(state))
+```
+
+## Widget 2
+### Mapping all wells in each individual state 
+
+Data frame 
+```{r}
+# Make dataframe of only unique sites (sites only listed once) 
+
+w2 <- gw_tidy %>% 
+  select(site_no, dec_lat_va, dec_long_va, state) %>% 
+  distinct(site_no, .keep_all = TRUE)
+
+write_tsv(w2, here::here("data", "w2.txt"))
+
+# Update entire_usgs_gw data to be recognized as spatial points (lat/long) 
+
+w2_sf <- st_as_sf(w2_unique, coords = c("dec_long_va", "dec_lat_va"), crs = 4326)
+```
+
+#### Experimenting with mapping techniques 
+
+Read in shapefiles of the USA 
+```{r}
+# USA shapefiles 
+states_shp <- read_sf(dsn = here::here("usa_shapefiles"), layer = "states")
+
+# Check CRS 
+# st_crs(states_shp)
+
+plot(states_shp)
+```
+
+Basic mapping (used in Shiny App for now) 
+```{r}
+# World map 
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# USA map 
+usa <- ne_countries(scale = 110, country = 'united states of america', returnclass = "sf")
+
+# Plot blank USA map
+ggplot(data = usa) +
+  geom_sf()
+
+# Plot all well points on USA map 
+ggplot(data = usa) +
+  geom_sf() +
+  geom_point(data = w1_unique, 
+             aes(x = dec_long_va, 
+                 y = dec_lat_va), 
+             size = 0.1)
+
+# Plot just Alaska 
+ggplot(data = usa) + 
+  geom_sf() +
+  geom_point(data = w1_unique %>% 
+               filter(state == "Alaska"),
+             aes(x = dec_long_va, 
+                 y = dec_lat_va),
+             size = 0.1) +
+  coord_sf(xlim = c(-171.9, -64.60), 
+           ylim = c(17.70, 73), expand = FALSE) +
+  theme_light() +
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank())
+
+# More plotting experiments 
+ggplot(data = usa) + 
+  geom_sf() +
+  geom_point(data = w1_unique %>% 
+               filter(state == "alaska"),
+             aes(x = dec_long_va, 
+                 y = dec_lat_va),
+             size = 0.1) +
+  coord_sf()
+```
+
+## Widget 3 
+
+```{r}
+# Create dataframe that is only unique sites, groups by state and year, and counts total wells for each state each year 
+
+# Find minimum level year (year well was built) then sort to keep only unique values of the first recorded well measurement (year well was built) 
+
+w3 <- gw_tidy %>% 
+  group_by(site_no) %>% 
+  mutate(min_year = min(level_year)) %>% 
+  arrange(min_year) %>% 
+  distinct(site_no, .keep_all = TRUE) %>% 
+  group_by(state, min_year) %>% 
+  count()
+
+write_tsv(w3, here::here("data", "w3.txt"))
+  
+```
+
+```{r}
+# Map for W3 
+
+ggplot(data = well_count) +
+  geom_point(group_by(state), 
+             aes(x = level_year, 
+                 y = n))
+```
+
+## Widget 4
+
+```{r}
+# Dataframe (very similar to W3) 
+
+w4 <- w3 %>% 
+  group_by(state) %>% 
+  mutate(total_wells = cumsum(n))
+```
+
+## Widget 5
+
+Longest well record in each state 
+
+```{r}
+# Identify longest well record 
+
+well_record <- gw_tidy %>% 
+  group_by(site_no) %>% 
+  filter(n() > 60) %>% 
+  mutate(min_year = min(level_year), 
+         max_year = max(level_year), 
+         total_years = max_year - min_year) 
+
+well_longest_record <- well_record %>% 
+  group_by(site_no) %>% 
+  arrange(-total_years) %>% 
+  distinct(site_no, .keep_all = TRUE)
+
+# Group by state and top well record for each state
+# Remove double (ties) for some states 
+
+longest_50_states <- well_longest_record %>% 
+  group_by(state) %>% 
+  top_n(1) %>% 
+  filter(!site_no %in% c(415626071254601, 404606098403501, 404619098365201, 404832098361701, 404345098560001, 435554112043301, 434459112120601))
+
+```
+Use 50 state list to find all observations for each well 
+
+```{r}
+# Put 50 state list back into main dataframe for all observations 
+
+# Make vector of unique site IDs  
+
+states_vector <- longest_50_states %>% 
+  pull(site_no)
+
+# Use the resulting vector to filter target sites from original dataframe 
+
+w5_50_states <- gw_tidy %>%
+  filter(site_no %in% c(states_vector))
+
+# Save text file 
+
+write_tsv(w5_50_states, here::here("data", "w5"))
+
+```
+
